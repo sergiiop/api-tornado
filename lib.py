@@ -487,7 +487,7 @@ def Obtener_Fuentes_datos(keywords, cantidad_fuentes):
 def buscar_servicios(url):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_10_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.95 Safari/537.36'}
-    openai.api_key = "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"
+    
     response = requests.get(url, headers=headers)
     soup = BeautifulSoup(response.content)
     url_service_1 = []
