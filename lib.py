@@ -10,12 +10,8 @@ from bs4 import BeautifulSoup
 from googlesearch import search
 from wordcloud import WordCloud
 from wordcloud import STOPWORDS
-from wordcloud import ImageColorGenerator
 from urllib.parse import urlparse
-from textblob import TextBlob
-from nltk.corpus import stopwords
 import requests
-import seaborn as sns
 import folium
 from folium.plugins import HeatMap
 from db import ctor, cgaia, conectar
@@ -173,6 +169,252 @@ def buildgraph(id_empresa, resumen):
 
 
         # return {'empresa': id_empresa, 'resumen': resumen}
+
+        if resumen == "1":
+            sql = """select 
+                true as is_active ,
+                re.epresa_a ,
+                ea.razonsocial as razonsocial_a ,
+                ea.nombrecomercial as nombrecomercial_a ,
+                re.epresa_b ,
+                eb.razonsocial as razonsocial_b ,
+                eb.nombrecomercial as nombrecomercial_b ,
+                count(tr.id) as num_relaciones,
+                string_agg(tr.nombre, ',') as relaciones,
+                string_agg(tr.id::"varchar", ',') as idtipos
+                from empresa_master.relacion_empresa re 
+                inner join empresa_master.tipo_relacion tr 
+                on (re.tipo_relacion = tr.id)
+                inner join empresa_master.empresa ea 
+                on (re.epresa_a = ea.id)
+                inner join empresa_master.empresa eb 
+                on (re.epresa_b = eb.id)
+                """
+            grb = """
+                group by 
+                re.epresa_a ,
+                ea.razonsocial ,
+                ea.nombrecomercial ,
+                re.epresa_b ,
+                eb.razonsocial ,
+                eb.nombrecomercial
+                """
+            sql += cond + grb
+
+        else:
+            sql = """select re.id , 
+                re.is_active ,
+                re.epresa_a ,
+                ea.razonsocial as razonsocial_a ,
+                ea.nombrecomercial as nombrecomercial_a ,
+                re.epresa_b ,
+                eb.razonsocial as razonsocial_b ,
+                eb.nombrecomercial as nombrecomercial_b ,
+                tr.id as idtipo,
+                tr.nombre as relacion, 
+                tr.descripcion 
+                from empresa_master.relacion_empresa re 
+                inner join empresa_master.tipo_relacion tr 
+                on (re.tipo_relacion = tr.id)
+                inner join empresa_master.empresa ea 
+                on (re.epresa_a = ea.id)
+                inner join empresa_master.empresa eb 
+                on (re.epresa_b = eb.id)    
+                """  
+            # LIMIT 100
+
+            sql += cond
+
+        # print(sql)
+        cursor.execute(sql)
+        relaciones = cursor.fetchall()
+        # Obtener los nombres de las columnas del cursor
+        # nombres_columnas = [desc[0] for desc in cursor.description]
+
+        # Cerrar el cursor y la conexión a la base de datos
+        cursor.close()
+        conexiong.close()
+
+        nodesv = []
+        empresas = []
+        nodes = []
+        edges = []
+        elements = []
+
+        ne = 1
+
+        for rel in relaciones:
+            # print(rel)
+            if rel['epresa_a'] not in nodesv:
+                nodesv.append(rel['epresa_a'])
+                if bool(rel['razonsocial_a']) and len(rel['razonsocial_a']) != 0:
+                    empresas.append(rel['razonsocial_a'].capitalize())
+                else:
+                    empresas.append('Sin razón social') #  + rel['epresa_a']
+            if rel['epresa_b'] not in nodesv:
+                nodesv.append(rel['epresa_b'])
+                if bool(rel['razonsocial_b']) and len(rel['razonsocial_b']) != 0:
+                    empresas.append(rel['razonsocial_b'].capitalize())
+                else:
+                    empresas.append('Sin razón social') #  + rel['epresa_b']
+            ecolor = 'red'
+            if rel['is_active']:
+                ecolor = 'gray'
+
+            if resumen == "1":
+                edge = {
+                    'data': {'id': f"{rel['epresa_a']}-{rel['epresa_b']}-{str(ne)}", 'source': rel['epresa_a'],
+                            'target': rel['epresa_b'], 'label': "Relaciones: " + str(rel['num_relaciones']), 'color': ecolor}
+                }
+            else:
+                edge = {
+                    'data': {'id': f"{rel['epresa_a']}-{rel['epresa_b']}-{rel['idtipo']}", 'source': rel['epresa_a'],
+                            'target': rel['epresa_b'], 'label': rel['relacion'], 'color': ecolor}
+                }
+                # edge = {
+                #     'source': rel['epresa_a'],
+                #     'target': rel['epresa_b']
+                # }
+            edges.append(edge)
+            ne +=1
+
+        for i, node in enumerate(nodesv):
+            color = '#698CBF'
+            if node == id_empresa:
+                color = '#23386D'
+            # nodes.append({'id': node, 'color': color})
+            nodes.append({'data': {'id': node}})
+            elements.append({'data': {'id': node, 'label': empresas[i], 'color': color}})
+
+        for ee in edges:
+            elements.append(ee)
+
+        return elements
+        # return {'nodes': nodes, 'links': edges}
+
+    except Exception as e:
+        return e.__str__()
+    
+def buildgraph_by_category(id_empresa):
+    try:
+        # Establecer la conexión y el cursor usando 'with' para asegurar el cierre
+        with conectar(cgaia) as conexiong:
+            with conexiong.cursor() as cursor:
+                cond = f"WHERE relation.epresa_a = '{id_empresa}'"
+
+                sql = f"""
+                SELECT 
+                    relation.id,
+                    relation.is_active,
+                    relation.epresa_a,
+                    empresa.razonsocial AS razonsocial_a,
+                    empresa.nombrecomercial AS nombrecomercial_a,
+                    se_a.id AS sector_empresa_id_a,
+                    se_a.descripcion AS sector_empresa_a,
+                    se_b.id AS sector_empresa_id_b,
+                    se_b.descripcion AS sector_empresa_b,
+                    relation.epresa_b,
+                    empresab.razonsocial AS razonsocial_b,
+                    empresab.nombrecomercial AS nombrecomercial_b
+                FROM empresa_master.relacion_empresa relation
+                INNER JOIN empresa_master.empresa empresa
+                    ON (relation.epresa_a = empresa.id)
+                INNER JOIN empresa_master.empresa empresab
+                    ON (relation.epresa_b = empresab.id)
+                LEFT JOIN empresa_master.sector_empresa se_a
+                    ON (se_a.id = empresa.sector_empresa_id)
+                LEFT JOIN empresa_master.sector_empresa se_b
+                    ON (se_b.id = empresab.sector_empresa_id)
+                {cond}
+                GROUP BY relation.id, relation.is_active, relation.epresa_a, empresa.razonsocial, empresa.nombrecomercial, relation.epresa_b, empresab.razonsocial, empresab.nombrecomercial, se_a.id, se_b.id, se_a.descripcion, se_b.descripcion
+                """
+
+                cursor.execute(sql)
+                relaciones = cursor.fetchall()
+
+         # Procesamiento de los resultados
+        nodesv = set()
+        edges = []
+        elements = []
+
+        nodos_principales = {
+            2: '#034078',  # Azul - Academia
+            1: '#FF7F11',  # Naranja - Sector Productivo
+            4: '#2ca02c',  # Verde - Aglomeracion
+            3: '#d62728',   # Rojo - Hibrido
+            5: '#9467bd'   # Morado
+        }
+
+        empresas_por_sector = {
+            2: [],  # SECTOR ACADEMICO
+            1: [],  # SECTOR PRODUCTIVO
+            4: [],  # HIBRIDO
+            3: []   # ESTADO
+        }
+ 
+        def add_empresa(empresa_id, razonsocial, sector_id):
+            if empresa_id not in nodesv:
+                nodesv.add(empresa_id)
+                color = '#23386D' if empresa_id == id_empresa else nodos_principales[rel['sector_empresa_id_b']]
+ 
+                empresa_nodo = {
+                    'data': {'id': empresa_id, 'label': razonsocial if razonsocial else 'Sin razón social', 'color': color}
+                }
+
+                if sector_id in empresas_por_sector:
+                    empresas_por_sector[sector_id].append(empresa_nodo)
+                else:
+                    empresas_por_sector[None].append(empresa_nodo)
+
+        empresas_b_vistas = set()
+        edges_vistas = set()
+
+        for rel in relaciones:
+            print(rel)
+            add_empresa(rel['epresa_a'], rel['razonsocial_a'], rel['sector_empresa_id_a'])
+
+            if rel['epresa_b'] not in empresas_b_vistas:
+                add_empresa(rel['epresa_b'], rel['razonsocial_b'], rel['sector_empresa_id_b'])
+                empresas_b_vistas.add(rel['epresa_b'])
+
+            edge_id = (rel['epresa_a'], rel['epresa_b'])
+            if edge_id not in edges_vistas:
+                ecolor = nodos_principales[rel['sector_empresa_id_b']] if rel['sector_empresa_id_b'] in nodos_principales else '#FF0000'
+                edge = {
+                    'data': {
+                        'id': f"{rel['epresa_a']}-{rel['epresa_b']}-{rel['id']}",
+                        'source': rel['epresa_a'],
+                        'target': rel['epresa_b'],
+                        'color': ecolor,
+                    }
+                }
+                edges.append(edge)
+                edges_vistas.add(edge_id)
+
+        for sector_id in sorted(empresas_por_sector.keys()):
+            elements.extend(empresas_por_sector[sector_id])
+        # Adición de bordes al gráfico
+        elements.extend(edges)
+
+        return elements
+
+    except Exception as e:
+        print(e)
+        return str(e)
+    
+def buildgraphv2(id_empresa, resumen):
+    try:
+        conexiong = conectar(cgaia)
+        # Código para consultar la tabla del esquema empresas
+        cursor = conexiong.cursor()
+
+        cond = ""
+        # cond = f" where re.epresa_a  = '{id_empresa}' or re.epresa_b  = '{id_empresa}' "
+
+
+        # return {'empresa': id_empresa, 'resumen': resumen}
+
+        
 
         if resumen == "1":
             sql = """select 

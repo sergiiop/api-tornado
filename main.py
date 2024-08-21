@@ -3,7 +3,7 @@ from typing import List
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import Response
-from lib import loadrecords, Obtener_Fuentes_datos, buildgraph, buildorbital
+from lib import loadrecords, Obtener_Fuentes_datos, buildgraph, buildorbital, buildgraph_by_category
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -57,12 +57,12 @@ async def getrecords(keywords=None, cantidad_fuentes=None):
 
 @app.get("/grafo/{idempresa}/{resumeng}")
 async def getgraph(idempresa, resumeng):
-    data_graph = buildgraph(id_empresa=idempresa, resumen=resumeng)
+    data_graph = buildgraph_by_category(id_empresa=idempresa)
     return data_graph
 
 @app.get("/grafo/{idempresa}")
 async def getgraph(idempresa):
-    data_graph = buildgraph(id_empresa=idempresa, resumen=0)
+    data_graph = buildgraph_by_category(id_empresa=idempresa, resumen=0)
     return data_graph
 
 @app.get("/orbital/{idempresa}")

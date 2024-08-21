@@ -13,9 +13,9 @@ ctor = {
 cgaia = {
         'user': "postgres",
         'password':"G@t3w@yTI-31416",
-        'host': "developer.gatewayit.co",
+        'host': "129.213.167.145",
         'port': "5432",
-        'database': "tornado",
+        'database': "tornado-dev",
         'cursor_factory': RealDictCursor
 }
 
