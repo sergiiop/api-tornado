@@ -3,7 +3,7 @@ from typing import List
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import Response
-from lib import loadrecords, Obtener_Fuentes_datos, buildgraph, buildorbital, buildgraph_by_category
+from lib import *
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -15,9 +15,10 @@ origins = [
     "http://localhost:5174",
     "https://gaia.appgatewayit.co",
     "https://tornado.gatewayit.co",
-    "https://masterminds.gatewayit.co",
     "https://api.gatewayit.co",
-    "https://ia.gatewayit.co"
+    "https://ia.gatewayit.co",
+    "https://masterminds-co.com/",
+    "https://dev.masterminds-co.com/"
 ]
 
 
@@ -67,5 +68,25 @@ async def getgraph(idempresa):
 
 @app.get("/orbital/{idempresa}")
 async def getorbital(idempresa=None):
-    data_orb = buildorbital(id_empresa=idempresa)
+    data_orb = buildorbital(id_empresa=idempresa, is_mastermind=False)
     return data_orb
+
+@app.get("/orbital-mastermind/{idempresa}")
+async def getorbital(idempresa=None):
+    data_orb = buildorbital(id_empresa=idempresa, is_mastermind=True)
+    return data_orb
+
+@app.get("/grafo-by-session/{idsession}")
+async def get_graph_by_session(idsession):
+    data_graph = buildgraph_by_session(idsession)
+    return data_graph
+
+@app.get("/grafo-mastermind")
+async def getgraph():
+    data_graph = getGrafoByAllCompanies()
+    return data_graph
+
+@app.get("/grafo-mastermind-actividad")
+async def getgraph2():
+    data_graph = groupByActivityEconomic()
+    return data_graph

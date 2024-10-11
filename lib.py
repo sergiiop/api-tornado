@@ -5,8 +5,10 @@ from matplotlib import pyplot as plt
 import pandas as pd
 import plotly.io as pio
 import plotly.express as px
-
+from contextlib import contextmanager
+from typing import List, Dict, Tuple, Any
 from bs4 import BeautifulSoup
+from enum import Enum
 from googlesearch import search
 from wordcloud import WordCloud
 from wordcloud import STOPWORDS
@@ -14,8 +16,56 @@ from urllib.parse import urlparse
 import requests
 import folium
 from folium.plugins import HeatMap
-from db import ctor, cgaia, conectar
+from dataclasses import dataclass
+from db import ctor, cgaia, conectar, cmaster
 
+class CompanyType(Enum):
+    LARGE = 'Empresa grande'
+    MEDIUM = 'Empresa mediana'
+    SMALL = 'Empresa pequeña'
+    GOVERNMENT = 'Gobierno'
+    MULTINATIONAL = 'Multinacional'
+    NGO = 'Organización no gubernamental'
+    STARTUP = 'Startup'
+
+COLOR_MAP = {
+    CompanyType.LARGE: '#FF0000',
+    CompanyType.MEDIUM: '#FFA500',
+    CompanyType.SMALL: '#FFFF00',
+    CompanyType.GOVERNMENT: '#008000',
+    CompanyType.MULTINATIONAL: '#0000FF',
+    CompanyType.NGO: '#FF00FF',
+    CompanyType.STARTUP: '#800080'
+}
+
+MASTER_MINDS_EMAIL = 'master-minds@gmail.com'
+MASTER_MINDS_NODE_COLOR = '#23386D'
+DEFAULT_COLOR = '#CCCCCC'
+
+@dataclass
+class Company:
+    id: int
+    razonsocial: str
+    tipo_empresa: str
+
+@dataclass
+class GraphElement:
+    id: str
+    label: str
+    color: str
+    classes: str = ''
+    source: str = None
+    target: str = None
+
+@contextmanager
+def get_database_connection():
+    connection = None
+    try:
+        connection = conectar(cmaster)
+        yield connection
+    finally:
+        if connection:
+            connection.close()
 
 # Función para crear el mapa de calor
 def generar_mapa_calor(df):
@@ -295,6 +345,68 @@ def buildgraph(id_empresa, resumen):
     except Exception as e:
         return e.__str__()
     
+
+def get_mastermind_company() -> Tuple[int, str]:
+    sql = """
+    SELECT 
+        e.id, e.razonsocial
+    FROM
+        empresa_master.empresa e
+    JOIN
+        seguridad.usuario u ON u."empresa_id" = e."id"
+    WHERE
+        u.email = %s;
+    """
+    
+    try:
+        with get_database_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (MASTER_MINDS_EMAIL,))
+                result = cursor.fetchone()
+                if not result:
+                    raise ValueError(f"No master minds company found for email: {MASTER_MINDS_EMAIL}")
+                return result['id'], result['razonsocial']
+    except Exception as e:
+        raise
+
+def create_node(company: Company, color: str) -> GraphElement:
+    return GraphElement(
+        id=str(company.id),
+        label=company.razonsocial,
+        color=color,
+        classes=company.tipo_empresa
+    )
+
+def create_edge(source_id: str, target_id: str) -> GraphElement:
+    return GraphElement(
+        id=f"{source_id}-{target_id}",
+        label='',
+        color='red',
+        source=source_id,
+        target=target_id
+    )
+
+def calculate_percentages(empresas: List[Company]) -> Dict[str, str]:
+    total = len(empresas)
+    if total == 0:
+        return {tipo.value: COLOR_MAP[tipo] for tipo in CompanyType}
+    
+    counts = {}
+    unknown_count = 0
+    
+    for tipo in CompanyType:
+        count = len([e for e in empresas if e.tipo_empresa == tipo.value])
+        percentage = (count / total) * 100 if total > 0 else 0
+        counts[f"{tipo.value} {percentage:.2f}%"] = COLOR_MAP[tipo]
+    
+    # Contar empresas sin tipo
+    unknown_count = len([e for e in empresas if e.tipo_empresa is None])
+    if unknown_count > 0:
+        unknown_percentage = (unknown_count / total) * 100
+        counts[f"Sin clasificar {unknown_percentage:.2f}%"] = DEFAULT_COLOR
+    
+    return dict(sorted(counts.items(), key=lambda x: float(x[0].split()[-1].rstrip('%')), reverse=True))
+    
 def buildgraph_by_category(id_empresa):
     try:
         # Establecer la conexión y el cursor usando 'with' para asegurar el cierre
@@ -370,7 +482,6 @@ def buildgraph_by_category(id_empresa):
         edges_vistas = set()
 
         for rel in relaciones:
-            print(rel)
             add_empresa(rel['epresa_a'], rel['razonsocial_a'], rel['sector_empresa_id_a'])
 
             if rel['epresa_b'] not in empresas_b_vistas:
@@ -401,6 +512,69 @@ def buildgraph_by_category(id_empresa):
     except Exception as e:
         print(e)
         return str(e)
+    
+def groupBySizeCompanyV2(empresas_raw: List[Dict[str, Any]]) -> Dict[str, Any]:
+    try:
+        # Convertir datos crudos a objetos Company, manejando posibles valores None
+        empresas = []
+        for e in empresas_raw:
+            try:
+                empresa = Company(
+                    id=e['id'],
+                    razonsocial=e.get('razonsocial'),
+                    tipo_empresa=e.get('tipo_empresa')
+                )
+                empresas.append(empresa)
+            except Exception as company_error:
+                print(f"Error al crear objeto Company: {company_error}")
+                continue
+        
+        print(empresas)
+        elements = []
+        
+        # Obtener y crear nodo para master minds
+        try:
+            mastermind_id, mastermind_name = get_mastermind_company()
+            mastermind_node = GraphElement(
+                id=str(mastermind_id),
+                label=mastermind_name,
+                color=MASTER_MINDS_NODE_COLOR
+            )
+            elements.append({'data': mastermind_node.__dict__})
+        except Exception as master_error:
+            return {'elements': [], 'color_nodos': {}}
+        
+        # Color por defecto para empresas sin tipo
+        DEFAULT_COLOR = '#CCCCCC'
+        
+        # Crear nodos y conexiones para cada empresa
+        for empresa in empresas:
+            color = DEFAULT_COLOR
+            if empresa.tipo_empresa:
+                try:
+                    company_type = CompanyType(empresa.tipo_empresa)
+                    color = COLOR_MAP[company_type]
+                except ValueError:
+                    print(f"Tipo de empresa no reconocido: {empresa.tipo_empresa}")
+            
+            node = create_node(empresa, color)
+            edge = create_edge(str(empresa.id), str(mastermind_id))
+            
+            elements.extend([
+                {'data': node.__dict__},
+                {'data': edge.__dict__}
+            ])
+        
+        color_nodos = calculate_percentages(empresas)
+        
+        return {
+            'elements': elements,
+            'color_nodos': color_nodos
+        }
+    
+    except Exception as e:
+        print(e)
+        raise
     
 def buildgraphv2(id_empresa, resumen):
     try:
@@ -542,9 +716,13 @@ def buildgraphv2(id_empresa, resumen):
         return e.__str__()
 
 
-def buildorbital(id_empresa=None):
+def buildorbital(id_empresa=None, is_mastermind=False):
     try:
         conexiong = conectar(cgaia)
+
+        if is_mastermind:
+            conexiong = conectar(cmaster)
+
         # Código para consultar la tabla del esquema empresas
         cursor = conexiong.cursor()
 
@@ -657,8 +835,312 @@ def buildorbital(id_empresa=None):
 
     except Exception as e:
         return e.__str__()
+    
+
+def getGrafoByAllCompanies():
+    try: 
+        conexiong = conectar(cmaster)
+
+        cursor = conexiong.cursor()
+
+        sql = """
+        SELECT DISTINCT ON (e."id")
+            e."id",
+            t.tipo_empresa,
+            e."razonsocial"
+        FROM
+            sesion.form_register_master_mind t
+        JOIN
+            seguridad.usuario u ON t."userId" = u."id"
+        JOIN
+            empresa_master.empresa e ON u."empresa_id" = e."id"
+        WHERE
+            t.tipo_empresa IS NOT NULL AND e.razonsocial != ''
+        ORDER BY 
+            e."id", t."id";
+        """
+
+        cursor.execute(sql)
+        empresas = cursor.fetchall()
+
+        cursor.close()
+
+        conexiong.close()
+
+        return groupBySizeCompanyV2(empresas)
+
+    except Exception as e:
+        return e.__str__()
+    
+def buildgraph_by_session(session_id: str) -> Dict[str, Any]:
+    sql = """
+    SELECT
+        e.id AS id,
+        e.razonsocial,
+        e.nombrecomercial,
+        te.descripcion as tipo_empresa
+    FROM
+        sesion.usuario_sesion us
+    INNER JOIN
+        seguridad.usuario u ON us."userId" = u.id
+    INNER JOIN
+        empresa_master.empresa e ON u.empresa_id = e.id
+    LEFT JOIN
+        empresa_master.tipo_empresa te ON e.tipo_empresa_id = te.id
+    WHERE
+        us."sesionId" = %s;
+    """
+    
+    try:
+        with get_database_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (session_id,))
+                empresas = cursor.fetchall()
+                
+                if not empresas:
+                    print(f"No companies found for session ID: {session_id}")
+                    return {}
+                
+                print(f"Found {len(empresas)} companies for session ID: {session_id}")
+                return groupBySizeCompanyV2(empresas)
+                
+    except Exception as e:
+        print(f"Error processing session ID: {session_id}")
+        raise
+
+def groupBySizeCompany(empresas):
+    try:
+        tipo_empresa = [
+            'Empresa grande',
+            'Empresa mediana',
+            'Empresa pequeña',
+            'Gobierno',
+            'Multinacional',
+            'Organización no gubernamental',
+            'Startup'
+        ]
+
+        color_nodos = {
+           'Empresa grande': '#FF0000',
+            'Empresa mediana': '#FFA500',
+            'Empresa pequeña': '#FFFF00',
+            'Gobierno': '#008000',
+            'Multinacional': '#0000FF',
+            'Organización no gubernamental': '#FF00FF',
+            'Startup': '#800080'
+
+        }
+
+        percentajes_by_type = {
+            'Empresa grande': 0,
+            'Empresa mediana': 0,
+            'Empresa pequeña': 0,
+            'Gobierno': 0,
+            'Multinacional': 0,
+            'Organización no gubernamental': 0,
+            'Startup': 0
+        }
+
+        elements = []
+
+        conexiong = conectar(cmaster)
+        # Código para consultar la tabla del esquema empresas
+        cursor = conexiong.cursor()
+
+        sql2 = """SELECT 
+            e.id, e.razonsocial
+        FROM
+            empresa_master.empresa e
+        JOIN
+            seguridad.usuario u ON u."empresa_id" = e."id"
+        WHERE
+        u.email = 'master-minds@gmail.com';
+        """
+
+        cursor.execute(sql2)
+
+        empresa_mastermind = cursor.fetchall()
+
+        cursor.close()
+
+        conexiong.close()
+
+        elements.append({'data': {'id': empresa_mastermind[0]['id'], 'label': empresa_mastermind[0]['razonsocial'], 'color': '#23386D'}})
+
+        for tipo in tipo_empresa:
+            empresas_filtradas = list(filter(lambda x: x['tipo_empresa'] == tipo, empresas))
+
+            # Agregar nodo de empresas y conexoin a empresa mastermind
+            for index, empresa in enumerate(empresas_filtradas):
+                print(empresa)
+                ecolor = color_nodos[empresa['tipo_empresa']] if empresa['tipo_empresa'] in color_nodos else '#FF0000'
+                elements.append({'data': {'id': empresa['id'], 'label': empresa['razonsocial'], 'color': ecolor , 'classes': empresa['tipo_empresa'] }})
+                elements.append({'data': {'id': f"{empresa['id']}-{empresa_mastermind[0]['id']}", 'source': empresa['id'], 'target': empresa_mastermind[0]['id'], 'color': 'red'}})
+
+        total = len(empresas)
+
+        percentajesByActivity = []
+        for tipo in tipo_empresa:
+            empresas_filtradas = list(filter(lambda x: x['tipo_empresa'] == tipo, empresas))
+            porcentaje = (len(empresas_filtradas) / total) * 100
+            percentajesByActivity.append((tipo, porcentaje))
+
+        # Ordenar la lista por porcentaje en orden descendente
+        percentajesByActivity.sort(key=lambda x: x[1], reverse=True)
+
+        # Crear el diccionario `color_nodos` con el porcentaje en la clave, ordenado
+        color_nodos = {
+            f"{tipo} {porcentaje:.2f}%": color_nodos[tipo]
+            for tipo, porcentaje in percentajesByActivity
+        }
+
+        return {
+            'elements' : elements,
+            'color_nodos': color_nodos
+        }
+    
+    except Exception as e:
+        return e.__str__()
+    
+def groupByActivityEconomic():
+    try:
+        tipo_empresa = [
+            'Agro y ganadería',
+            'Ecosistemas, corporaciones y agremiaciones',
+            'Educación y cultura',
+            'Energía',
+            'Gobierno',
+            'Inmobiliario y Construcción',
+            'Movilidad y transporte',
+            'ONG',
+            'Retail',
+            'Salud y farma',
+            'Servicios financieros y banca',
+            'Servicios profesionales',
+            'Servicios Públicos',
+            'Tecnología'
+        ]
+
+        color_nodos = {
+            'Agro y ganadería': '#228B22',  # Forest Green
+            'Ecosistemas, corporaciones y agremiaciones': '#32CD32',  # Lime Green
+            'Educación y cultura': '#1E90FF',  # Dodger Blue
+            'Energía': '#FFD700',  # Gold
+            'Gobierno': '#8B0000',  # Dark Red
+            'Inmobiliario y Construcción': '#FF4500',  # Orange Red
+            'Movilidad y transporte': '#2E8B57',  # Sea Green
+            'ONG': '#4B0082',  # Indigo
+            'Retail': '#FF6347',  # Tomato
+            'Salud y farma': '#FF1493',  # Deep Pink
+            'Servicios financieros y banca': '#4682B4',  # Steel Blue
+            'Servicios profesionales': '#8A2BE2',  # Blue Violet
+            'Servicios Públicos': '#00CED1',  # Dark Turquoise
+            'Tecnología': '#FFD700'  # Gold (distinct from Energía with a different brightness)
+        }
+
+        percentajesByActivity = {
+            'Agro y ganadería': 0,
+            'Ecosistemas, corporaciones y agremiaciones': 0,
+            'Educación y cultura': 0,
+            'Energía': 0,
+            'Gobierno': 0,
+            'Inmobiliario y Construcción': 0,
+            'Movilidad y transporte': 0,
+            'ONG': 0,
+            'Retail': 0,
+            'Salud y farma': 0,
+            'Servicios financieros y banca': 0,
+            'Servicios profesionales': 0,
+            'Servicios Públicos': 0,
+            'Tecnología': 0
+        }
+
+        elements = []
+
+        conexiong = conectar(cmaster)
+        # Código para consultar la tabla del esquema empresas
+        cursor = conexiong.cursor()
+
+        sql = """
+        SELECT DISTINCT ON (e."id")
+            e."id",
+            t."economicActivity" AS economicActivity,
+            e."razonsocial"
+        FROM
+            sesion.form_register_master_mind t
+        JOIN
+            seguridad.usuario u ON t."userId" = u."id"
+        JOIN
+            empresa_master.empresa e ON u."empresa_id" = e."id"
+        WHERE
+            t."economicActivity" IN ('Agro y ganadería', 'Ecosistemas, corporaciones y agremiaciones', 'Educación y cultura', 'Energía', 'Gobierno', 'Inmobiliario y Construcción', 'Movilidad y transporte', 'ONG', 'Retail', 'Salud y farma', 'Servicios financieros y banca', 'Servicios profesionales', 'Servicios Públicos', 'Tecnología') AND e.razonsocial != ''
+        ORDER BY 
+            e."id", t."id";
+        """
+
+        cursor.execute(sql)
+        empresas = cursor.fetchall()
 
 
+
+        sql2 = """SELECT 
+            e.id, e.razonsocial
+        FROM
+            empresa_master.empresa e
+        JOIN
+            seguridad.usuario u ON u."empresa_id" = e."id"
+        WHERE
+        u.email = 'master-minds@gmail.com';
+        """
+
+        cursor.execute(sql2)
+
+        empresa_mastermind = cursor.fetchall()
+
+        cursor.close()
+
+        conexiong.close()
+
+        elements.append({'data': {'id': empresa_mastermind[0]['id'], 'label': empresa_mastermind[0]['razonsocial'], 'color': '#23386D'}})
+
+        for tipo in tipo_empresa:
+            empresas_filtradas = list(filter(lambda x: x['economicactivity'] == tipo, empresas))
+
+            # Agregar nodo de empresas y conexoin a empresa mastermind
+            for index, empresa in enumerate(empresas_filtradas):
+                print(empresa)
+                ecolor = color_nodos[empresa['economicactivity']] if empresa['economicactivity'] in color_nodos else '#FF0000'
+                elements.append({'data': {'id': empresa['id'], 'label': empresa['razonsocial'], 'color': ecolor , 'classes': empresa['economicactivity'] }})
+                elements.append({'data': {'id': f"{empresa['id']}-{empresa_mastermind[0]['id']}", 'source': empresa['id'], 'target': empresa_mastermind[0]['id'], 'color': 'red'}})
+
+        # Calculate percentage
+
+        total = len(empresas)
+
+        percentajesByActivity = []
+        for tipo in tipo_empresa:
+            empresas_filtradas = list(filter(lambda x: x['economicactivity'] == tipo, empresas))
+            porcentaje = (len(empresas_filtradas) / total) * 100
+            percentajesByActivity.append((tipo, porcentaje))
+
+        # Ordenar la lista por porcentaje en orden descendente
+        percentajesByActivity.sort(key=lambda x: x[1], reverse=True)
+
+        # Crear el diccionario `color_nodos` con el porcentaje en la clave, ordenado
+        color_nodos = {
+            f"{tipo} {porcentaje:.2f}%": color_nodos[tipo]
+            for tipo, porcentaje in percentajesByActivity
+        }
+        
+
+        return {
+            'elements' : elements,
+            'color_nodos': color_nodos
+        }
+    
+    except Exception as e:
+        print(e)
+        return e.__str__()
 # ------------------------------------------------ VIGILANCIA TECNOLOGICA -----------------------------------------------------
 
 def Obtener_Fuentes_datos(keywords, cantidad_fuentes):

@@ -19,6 +19,15 @@ cgaia = {
         'cursor_factory': RealDictCursor
 }
 
+cmaster = {
+        'user': "postgres",
+        'password':"G@t3w@yTI-31416",
+        'host': "158.101.100.172",
+        'port': "5432",
+        'database': "mastermind",
+        'cursor_factory': RealDictCursor
+}
+
 # Configuración de la conexión a la base de datos PostgreSQL
 def conectar(c):
     conexion = psycopg2.connect(
